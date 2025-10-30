@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  # ===========================================
+  # CASSANDRA
+  # ===========================================
+  cassandra:
+    image: cassandra:4.1
+    container_name: data-docs-cassandra
+    restart: always
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=TrackerCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack1
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=128M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - data-docs-network
+
+  # ===========================================
+  # ELASTICSEARCH
+  # ===========================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: data-docs-elasticsearch
+    restart: always
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - data-docs-network
+
+  # ===========================================
+  # DATA-DOCS-API
+  # ===========================================
+  #data-docs-api:
+    #build:
+    #  context: .
+    #  dockerfile: Dockerfile
+    #container_name: data-docs-api
+    #restart: unless-stopped
+    #ports:
+    #  - "3300:3300"
+    #environment:
+    #  - PORT_API=3300
+    #  - APP_HOST=0.0.0.0
+    #  - NODE_ENV=production
+    #  - LOG_LEVEL=info
+    #  - IPS_CLUSTER=cassandra
+    #  - DATACENTER=datacenter1
+    #  - CASSANDRA_SUPERUSER=cassandra
+    #  - CASSANDRA_SUPERUSER_PASSWORD=cassandra
+    #  - BLOCKCHAIN_USERNAME=blockchain
+    #  - BLOCKCHAIN_PASSWORD=blockchainpass
+    #  - ELASTIC_HOST=http://elasticsearch:9200
+    #  - ELASTIC_INDEXNAME=documents
+    #  - ELASTIC_HTTPS_MODE=false
+    #  - MTLS=false
+    #depends_on:
+    #  cassandra:
+    #    condition: service_healthy
+    #  elasticsearch:
+    #    condition: service_healthy
+    #healthcheck:
+    #  test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3300/health || exit 1"]
+    #  interval: 30s
+    #  timeout: 10s
+    #  retries: 3
+    #networks:
+    #  - data-docs-network
+
+volumes:
+  cassandra_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+
+networks:
+  data-docs-network:
+    driver: bridge
