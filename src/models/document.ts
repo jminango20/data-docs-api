@@ -9,7 +9,8 @@ export interface Document {
   initAmount?: number;
   owner: string;
   operation: string;
-  status?: string;
+  status?: string;           // ASSET status: "ACTIVE" | "INACTIVE"
+  txStatus?: string;         // Transaction status: "PENDING" | "CONFIRMED"
   idLocal?: string;
   idExternal?: string[];
   

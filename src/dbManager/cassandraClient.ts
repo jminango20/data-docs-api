@@ -77,6 +77,7 @@ export const createTable = async (): Promise<void> => {
       owner text,
       operation text,
       status text,
+      tx_status text,
       id_local text,
       id_external list<text>,
       
@@ -141,13 +142,15 @@ export const insertDocument = async (document: any): Promise<any> => {
   const uuid = Uuid.random();
   document.idDocument = uuid.toString();
   document.createdAt = new Date();
+
+  const preparedDoc = prepareDocumentForCassandra(document);
   
   const metaTblMapperDoc = mapperDocument.forModel('MetaTblDoc');
   
   logger.debug('Inserting document into Cassandra');
-  const result = await metaTblMapperDoc.insert(document);
+  const result = await metaTblMapperDoc.insert(preparedDoc);
   
-  logger.info(` Document inserted: ${document.idDocument}`);
+  logger.info(` Document inserted: ${preparedDoc.idDocument}`);
   return result;
 };
 
@@ -198,6 +201,7 @@ export const updateDocument = async (
     txHash: 'tx_hash',
     blockNumber: 'block_number',
     status: 'status',
+    txStatus: 'tx_status',
     amount: 'amount',
     idLocal: 'id_local',
     dataHash: 'data_hash',
@@ -229,3 +233,37 @@ export const updateDocument = async (
   
   logger.info(`Document updated: ${idDocument}`);
 };
+
+function prepareDocumentForCassandra(document: any): any {
+  const prepared = { ...document };
+  
+  const listFields = ['groupedBy', 'groupedAssets', 'idExternal'];
+  
+  for (const field of listFields) {
+    if (prepared[field] !== undefined && prepared[field] !== null) {
+      
+      if (typeof prepared[field] === 'string') {
+        try {
+          prepared[field] = JSON.parse(prepared[field]);
+        } catch (e) {
+          logger.warn(`Failed to parse ${field} as JSON, treating as single value`);
+          prepared[field] = [prepared[field]];
+        }
+      }
+      
+      if (!Array.isArray(prepared[field])) {
+        prepared[field] = [prepared[field]];
+      }
+      
+      prepared[field] = prepared[field].map((item: any) => 
+        typeof item === 'string' ? item : String(item)
+      );
+    }
+  }
+  
+  if (prepared.data && typeof prepared.data !== 'string') {
+    prepared.data = JSON.stringify(prepared.data);
+  }
+  
+  return prepared;
+}
