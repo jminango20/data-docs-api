@@ -2,7 +2,11 @@ import * as cassandra from 'cassandra-driver';
 import { datacenter, ipsCluster } from '../config';
 import logger from '../utils/logger';
 
-// Cliente SEM autenticação (para desenvolvimento)
+/**
+ * Cliente Cassandra configurado sem autenticação (ambiente de desenvolvimento)
+ * 
+ * Para produção, adicionar authProvider com username/password
+ */
 export const client = new cassandra.Client({
   contactPoints: ipsCluster.split(',').map(ip => ip.trim()),
   localDataCenter: datacenter,
@@ -12,34 +16,41 @@ export const client = new cassandra.Client({
   },
 });
 
-// Usar o mesmo cliente para tudo
+// Alias para compatibilidade
 export const clientFirstAccess = client;
 
 /**
- * Conexão Cassandra (com retry)
+ * Conecta ao cluster Cassandra com retry automático
+ * 
+ * Tenta até 10 vezes com intervalo de 5 segundos entre tentativas
+ * 
+ * @throws {Error} Se não conseguir conectar após 10 tentativas
  */
 let tries = 0;
 export const connectCassandra = async (): Promise<void> => {
   try {
-    logger.info('Connecting to Cassandra...');
+    logger.info('Conectando ao Cassandra...');
     await client.connect();
-    logger.info('Connected to Cassandra (no auth)');
+    logger.info('Conectado ao Cassandra (sem autenticação)');
   } catch (error: any) {
     if (error instanceof cassandra.errors.NoHostAvailableError) {
       tries++;
       if (tries < 10) {
-        logger.warn(`Cassandra connection failed, retrying... (${tries}/10)`);
+        logger.warn(`Falha na conexão Cassandra, tentando novamente... (${tries}/10)`);
         await new Promise(resolve => setTimeout(resolve, 5000));
         return await connectCassandra();
       }
     }
-    logger.error('Failed to connect to Cassandra');
+    logger.error('Falha ao conectar no Cassandra após 10 tentativas');
     throw error;
   }
 };
 
 /**
- * KEYSPACE: trace_tracker
+ * Cria keyspace trace_tracker se não existir
+ * 
+ * Configuração: SimpleStrategy com replication_factor = 1 (apenas para dev/teste)
+ * Para produção, usar NetworkTopologyStrategy com múltiplas réplicas
  */
 export const createKeyspace = async (): Promise<void> => {
   const query = `
@@ -50,19 +61,28 @@ export const createKeyspace = async (): Promise<void> => {
     }
   `;
   await client.execute(query);
-  logger.info(' Keyspace trace_tracker created/verified');
+  logger.info('Keyspace trace_tracker criado/verificado');
 };
 
 /**
- * Criar usuário blockchain - SKIP em dev (sem auth)
+ * Cria usuário blockchain no Cassandra
+ * 
+ * SKIP em ambiente de desenvolvimento (sem autenticação ativa)
  */
 export const addUserBlockchain = async (): Promise<void> => {
-  logger.info('Skipping user creation (no auth in dev mode)');
+  logger.info('Criação de usuário ignorada (modo dev sem autenticação)');
   return Promise.resolve();
 };
 
 /**
- * TABELA: documents
+ * Cria tabela documents no keyspace trace_tracker
+ * 
+ * Campos principais:
+ * - id_document: Primary key (UUID)
+ * - asset_id_blockchain: ID do asset (indexado)
+ * - tx_hash: Hash da transação blockchain (indexado)
+ * - data: JSON serializado com informações adicionais
+ * - grouped_assets/grouped_by: Arrays para rastreamento de agrupamentos
  */
 export const createTable = async (): Promise<void> => {
   const query = `
@@ -112,11 +132,46 @@ export const createTable = async (): Promise<void> => {
       created_at timestamp
     )
   `;
-  await client.execute(query);  // SEM values!
-  logger.info('Table documents created/verified');
+  await client.execute(query);  
+  logger.info('Tabela documents criada/verificada');
 };
+
 /**
- * Mapper para insert/delete
+ * Cria índices secundários para queries otimizadas
+ * 
+ * Índices criados:
+ * - asset_id_blockchain: Para buscar documentos por asset ID
+ * - tx_hash: Para buscar documentos por hash da transação blockchain
+ */
+export const createIndexes = async (): Promise<void> => {
+  try {
+    // Índice para id_asset
+    const indexAsset = `
+      CREATE INDEX IF NOT EXISTS idx_asset_id_blockchain
+      ON trace_tracker.documents (asset_id_blockchain)
+    `;
+    await client.execute(indexAsset);
+    
+    // Índice para tx_hash (blockchain transaction hash)
+    const indexTxHash = `
+      CREATE INDEX IF NOT EXISTS idx_tx_hash 
+      ON trace_tracker.documents (tx_hash)
+    `;
+    await client.execute(indexTxHash);
+    
+    // Futuro: adicionar outros índices se necessário
+    
+  } catch (error: any) {
+    logger.error(`Falha ao criar índices: ${error.message}`);
+    throw error;
+  }
+};
+
+
+/**
+ * Mapper Cassandra para operações de insert/delete
+ * 
+ * Usa UnderscoreCqlToCamelCase para conversão automática de campos
  */
 const UnderscoreCqlToCamelCaseMappings = cassandra.mapping.UnderscoreCqlToCamelCaseMappings;
 const Uuid = cassandra.types.Uuid;
@@ -135,7 +190,13 @@ export const mapperDocument = new cassandra.mapping.Mapper(client, {
 });
 
 /**
- * INSERT DOCUMENT
+ * Insere documento no Cassandra
+ * 
+ * Gera UUID automático e timestamp de criação
+ * Serializa campos complexos (data, arrays) antes da inserção
+ * 
+ * @param document - Documento a ser inserido
+ * @returns Resultado da inserção
  */
 export const insertDocument = async (document: any): Promise<any> => {
   // Gerar UUID e converter para STRING
@@ -147,47 +208,203 @@ export const insertDocument = async (document: any): Promise<any> => {
   
   const metaTblMapperDoc = mapperDocument.forModel('MetaTblDoc');
   
-  logger.debug('Inserting document into Cassandra');
+  logger.debug(`Inserindo documento: ${preparedDoc.idDocument}`);
   const result = await metaTblMapperDoc.insert(preparedDoc);
   
-  logger.info(` Document inserted: ${preparedDoc.idDocument}`);
+  logger.info(`Documento inserido: ${preparedDoc.idDocument}`);
   return result;
 };
 
 /**
- * DELETE DOCUMENT
+ * Remove documento do Cassandra por ID
+ * 
+ * @param idDocument - ID do documento a ser removido
  */
 export const deleteDocument = async (idDocument: string): Promise<void> => {
   const metaTblMapperDoc = mapperDocument.forModel('MetaTblDoc');
   
   await metaTblMapperDoc.remove({ idDocument });
-  logger.info(`Document deleted: ${idDocument}`);
+  logger.info(`Documento removido: ${idDocument}`);
 };
 
 /**
- * SEARCH BY ID_DOCUMENT
+ * Busca documento por ID único
+ * 
+ * @param idDocument - ID do documento (primary key)
+ * @returns Resultado da query com documento encontrado
  */
 export const searchByDocumentId = async (idDocument: string): Promise<any> => {
   const query = 'SELECT * FROM trace_tracker.documents WHERE id_document = ?';
   const result = await client.execute(query, [idDocument], { prepare: true });
   
-  logger.debug(`searchByDocumentId - Found ${result.rowLength} results`);
+  logger.debug(`searchByDocumentId - Encontrados ${result.rowLength} resultado(s)`);
   return result;
 };
 
 /**
- * SEARCH BY ID_ASSET
+ * Busca documentos por ID do asset (único ou múltiplos)
+ * 
+ * Busca única com paginação:
+ *   searchByAssetId('asset-123', { pageSize: 100, pageState: '...' })
+ *   - Retorna até pageSize resultados
+ *   - Usa pageState para buscar próxima página
+ * 
+ * Busca múltipla sem paginação:
+ *   searchByAssetId(['asset-1', 'asset-2', ...])
+ *   - Executa queries em paralelo
+ *   - Retorna todos os resultados combinados
+ * 
+ * @param idAsset - ID único ou array de IDs
+ * @param options - Opções de paginação (apenas para busca única)
+ * @returns Objeto com rows, rowLength e pageState (se houver próxima página)
  */
-export const searchByAssetId = async (idAsset: string): Promise<any> => {
-  const query = 'SELECT * FROM trace_tracker.documents WHERE id_asset = ? ALLOW FILTERING';
-  const result = await client.execute(query, [idAsset], { prepare: true });
+export const searchByAssetId = async (
+  idAsset: string | string[],
+  options?: {
+    pageSize?: number;
+    pageState?: string;
+  }
+): Promise<any> => {
   
-  logger.debug(`searchByAssetId - Found ${result.rowLength} results`);
-  return result;
+  // Busca única - COM PAGINAÇÃO
+  if (!Array.isArray(idAsset)) {
+    const query = 'SELECT * FROM trace_tracker.documents WHERE asset_id_blockchain = ?';
+    
+    const queryOptions: any = {
+      prepare: true,
+      fetchSize: options?.pageSize || 100, // Padrão: 100 docs por página
+    };
+    
+    // Continua de onde parou se tiver pageState
+    if (options?.pageState) {
+      queryOptions.pageState = Buffer.from(options.pageState, 'base64');
+    }
+    
+    const result = await client.execute(query, [idAsset], queryOptions);
+    
+    logger.debug(`searchByAssetId - Encontrados ${result.rowLength} resultado(s) (página)`);
+    
+    return {
+      rows: result.rows,
+      rowLength: result.rowLength,
+      pageState: result.pageState 
+        ? result.pageState.toString() 
+        : null, // Token para próxima página
+    };
+  }
+  
+  // Busca múltipla - SEM PAGINAÇÃO (queries paralelas)
+  logger.debug(`searchByAssetId - Executando ${idAsset.length} queries paralelas`);
+  
+  const query = 'SELECT * FROM trace_tracker.documents WHERE asset_id_blockchain = ?';
+  
+  const results = await Promise.all(
+    idAsset.map(asset => 
+      client.execute(query, [asset], { 
+        prepare: true,
+        fetchSize: 1000 // Limite interno para cada query
+      })
+    )
+  );
+  
+  const allRows = results.flatMap(result => result.rows);
+  
+  logger.debug(`searchByAssetId - Encontrados ${allRows.length} resultado(s) total`);
+  
+  return {
+    rows: allRows,
+    rowLength: allRows.length,
+    pageState: null, // Paginação não disponível em busca múltipla
+  };
 };
 
 /**
- * UPDATE DOCUMENT (para atualizar txHash, blockNumber após blockchain)
+ * Busca documentos por hash da transação blockchain (único ou múltiplos)
+ * 
+ * Busca única com paginação:
+ *   searchByTxHash('0xabc123...', { pageSize: 100, pageState: '...' })
+ * 
+ * Busca múltipla sem paginação:
+ *   searchByTxHash(['0xabc123...', '0xdef456...'])
+ * 
+ * @param txHash - Hash único ou array de hashes
+ * @param options - Opções de paginação (apenas para busca única)
+ * @returns Objeto com rows, rowLength e pageState (se houver próxima página)
+ */
+export const searchByTxHash = async (
+  txHash: string | string[],
+  options?: {
+    pageSize?: number;
+    pageState?: string;
+  }
+): Promise<any> => {
+  
+  // Busca única - COM PAGINAÇÃO
+  if (!Array.isArray(txHash)) {
+    const query = 'SELECT * FROM trace_tracker.documents WHERE tx_hash = ?';
+    
+    const queryOptions: any = {
+      prepare: true,
+      fetchSize: options?.pageSize || 100,
+    };
+    
+    if (options?.pageState) {
+      queryOptions.pageState = Buffer.from(options.pageState, 'base64');
+    }
+    
+    const result = await client.execute(query, [txHash], queryOptions);
+    
+    logger.debug(`searchByTxHash - Encontrados ${result.rowLength} resultado(s) (página)`);
+
+    
+    return {
+      rows: result.rows,
+      rowLength: result.rowLength,
+      pageState: result.pageState 
+        ? result.pageState.toString() 
+        : null,
+    };
+  }
+  
+  // Busca múltipla - SEM PAGINAÇÃO (queries paralelas)
+  logger.debug(`searchByTxHash - Executando ${txHash.length} queries paralelas`);
+  
+  const query = 'SELECT * FROM trace_tracker.documents WHERE tx_hash = ?';
+  
+  const results = await Promise.all(
+    txHash.map(hash => 
+      client.execute(query, [hash], { 
+        prepare: true,
+        fetchSize: 1000
+      })
+    )
+  );
+  
+  const allRows = results.flatMap(result => result.rows);
+  
+  logger.debug(`searchByTxHash - Encontrados ${allRows.length} resultado(s) total`);
+ 
+  return {
+    rows: allRows,
+    rowLength: allRows.length,
+    pageState: null,
+  };
+};
+
+/**
+ * Atualiza campos de um documento existente
+ * 
+ * Campos atualizáveis comuns:
+ * - txHash / tx_hash
+ * - blockNumber / block_number
+ * - status
+ * - txStatus / tx_status
+ * - amount
+ * - idLocal / id_local
+ * - dataHash / data_hash
+ * 
+ * @param idDocument - ID do documento a atualizar
+ * @param updates - Objeto com campos e valores a atualizar
  */
 export const updateDocument = async (
   idDocument: string,
@@ -197,6 +414,7 @@ export const updateDocument = async (
   const setFields: string[] = [];
   const values: any[] = [];
   
+  // Mapeamento camelCase -> snake_case para compatibilidade
   const fieldMapping: Record<string, string> = {
     txHash: 'tx_hash',
     blockNumber: 'block_number',
@@ -207,6 +425,7 @@ export const updateDocument = async (
     dataHash: 'data_hash',
   };
   
+  // Monta cláusula SET dinamicamente
   for (const [key, value] of Object.entries(updates)) {
     const dbField = fieldMapping[key] || key;
     setFields.push(`${dbField} = ?`);
@@ -214,11 +433,11 @@ export const updateDocument = async (
   }
   
   if (setFields.length === 0) {
-    logger.warn(`No valid fields to update for document ${idDocument}`);
+    logger.warn(`Nenhum campo válido para atualizar no documento ${idDocument}`);
     return;
   }
   
-  // WHERE clause
+  // Adiciona ID para cláusula WHERE
   values.push(idDocument);
   
   const query = `
@@ -227,16 +446,28 @@ export const updateDocument = async (
     WHERE id_document = ?
   `;
   
-  logger.debug(`Updating document ${idDocument} with fields: ${Object.keys(updates).join(', ')}`);
+  logger.debug(`Atualizando documento ${idDocument} - Campos: ${Object.keys(updates).join(', ')}`);
   
   await client.execute(query, values, { prepare: true });
   
-  logger.info(`Document updated: ${idDocument}`);
+  logger.info(`Documento atualizado: ${idDocument}`);
 };
 
+/**
+ * Prepara documento para inserção no Cassandra
+ * 
+ * Conversões aplicadas:
+ * - Arrays (groupedBy, groupedAssets, idExternal): Garantidos como list<text>
+ * - Objetos (data): Serializados para JSON string
+ * - Strings JSON: Parseadas para arrays se necessário
+ * 
+ * @param document - Documento bruto
+ * @returns Documento preparado para Cassandra
+ */
 function prepareDocumentForCassandra(document: any): any {
   const prepared = { ...document };
   
+  // Campos que devem ser arrays (list<text> no Cassandra)
   const listFields = ['groupedBy', 'groupedAssets', 'idExternal'];
   
   for (const field of listFields) {
@@ -246,7 +477,7 @@ function prepareDocumentForCassandra(document: any): any {
         try {
           prepared[field] = JSON.parse(prepared[field]);
         } catch (e) {
-          logger.warn(`Failed to parse ${field} as JSON, treating as single value`);
+          logger.warn(`Falha ao parsear ${field} como JSON, tratando como valor único`);
           prepared[field] = [prepared[field]];
         }
       }
@@ -261,6 +492,7 @@ function prepareDocumentForCassandra(document: any): any {
     }
   }
   
+  // Serializa campo data se não for string
   if (prepared.data && typeof prepared.data !== 'string') {
     prepared.data = JSON.stringify(prepared.data);
   }
