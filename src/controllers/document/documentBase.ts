@@ -3,17 +3,37 @@ import {
   insertDocument, 
   deleteDocument, 
   updateDocument,
-  searchByDocumentId 
+  searchByDocumentId,
+  searchByAssetId as searchByAssetIdDb,   
+  searchByTxHash as searchByTxHashDb      
 } from '../../dbManager/cassandraClient';
 import logger from '../../utils/logger';
-import { Document } from '../../models/document';
+import { 
+  Document,
+  AddDocumentRequest,
+  AddDocumentResponse,
+  DeleteDocumentsRequest,
+  DeleteDocumentsResponse,
+  SearchDocumentRequest,
+  UpdateDocumentsRequest,
+  UpdateDocumentsResponse,
+  SearchByAssetIdRequest,
+  SearchByTxHashRequest,
+  SearchResponse
+} from '../../models/document';
 
 /**
- * POST /addDocument
+ * Adiciona documentos no Cassandra
  * 
- * Recebe documentos do tracker-api e persiste no Cassandra
+ * POST /addDocument
+ * Body: { documents: Document[] }
+ * 
+ * Implementa rollback automático em caso de erro
  */
-export const addDocument = async (req: Request, res: Response) => {
+export const addDocument = async (
+  req: Request<{}, AddDocumentResponse, AddDocumentRequest>,
+  res: Response<AddDocumentResponse | { code: number; message: string }>
+) => {
   const createdDocIds: string[] = [];
   
   try {
@@ -22,21 +42,19 @@ export const addDocument = async (req: Request, res: Response) => {
     if (!documents || !Array.isArray(documents) || documents.length === 0) {
       return res.status(400).json({
         code: 400,
-        message: 'documents array is required',
+        message: 'Documents array is required and must not be empty',
       });
     }
     
-    logger.info(`Received ${documents.length} document(s) to insert`);
+    logger.info(`Recebidos ${documents.length} documento(s) para inserir`);
     
     // Processar cada documento
     for (const doc of documents) {
       const treatedDoc = await treatDocument(doc);
-      
-      // Insert no Cassandra
-      const result = await insertDocument(treatedDoc);
+      await insertDocument(treatedDoc);
       createdDocIds.push(treatedDoc.idDocument.toString());
       
-      logger.info(`Document inserted: ${treatedDoc.idDocument}`);
+      logger.info(`Documento inserido: ${treatedDoc.idDocument}`);
     }
     
     return res.status(200).json({
@@ -45,43 +63,53 @@ export const addDocument = async (req: Request, res: Response) => {
     });
     
   } catch (error: any) {
-    logger.error(`Error in addDocument: ${error.message}`);
+    logger.error(`Erro em addDocument: ${error.message}`);
     
     // ROLLBACK: remover documentos criados
     if (createdDocIds.length > 0) {
-      logger.warn(`Rolling back ${createdDocIds.length} document(s)`);
+      logger.warn(`Executando rollback de ${createdDocIds.length} documento(s)`);
       for (const id of createdDocIds) {
         try {
           await deleteDocument(id);
+          logger.info(`Documento ${id} removido no rollback`);
         } catch (rollbackError: any) {
-          logger.error(`Failed to rollback document ${id}: ${rollbackError.message}`);
+          logger.error(`Falha no rollback do documento ${id}: ${rollbackError.message}`);
         }
       }
     }
     
     return res.status(500).json({
       code: 500,
-      message: error.message || 'Error adding documents',
+      message: error.message || 'Error creating documents',
     });
   }
 };
 
 /**
+ * Remove múltiplos documentos do Cassandra
+ * 
  * POST /deleteDocuments
+ * Body: { docsId: string[] }
+ * 
+ * Retorna erro se algum documento não for encontrado
  */
-export const removeDocuments = async (req: Request, res: Response) => {
+export const removeDocuments = async (
+  req: Request<{}, DeleteDocumentsResponse, DeleteDocumentsRequest>,
+  res: Response<DeleteDocumentsResponse | { code: number; message: string }>
+) => {
   try {
     const { docsId } = req.body;
     
     if (!docsId || !Array.isArray(docsId)) {
       return res.status(400).json({
         code: 400,
-        message: 'docsId array is required',
+        message: 'docsId array is required and must not be empty',
       });
     }
     
-    logger.info(`Deleting ${docsId.length} document(s)`);
+    logger.info(`Removendo ${docsId.length} documento(s)`);
     
+    // Verifica existência e remove cada documento
     for (const id of docsId) {
       const doc = await searchByDocumentId(id);
       
@@ -93,6 +121,7 @@ export const removeDocuments = async (req: Request, res: Response) => {
       }
       
       await deleteDocument(id);
+      logger.info(`Documento ${id} removido`);
     }
     
     return res.status(200).json({
@@ -101,8 +130,7 @@ export const removeDocuments = async (req: Request, res: Response) => {
     });
     
   } catch (error: any) {
-    logger.error(`Error in removeDocuments: ${error.message}`);
-    
+    logger.error(`Erro em removeDocuments: ${error.message}`);
     return res.status(500).json({
       code: 500,
       message: error.message || 'Error deleting documents',
@@ -111,16 +139,22 @@ export const removeDocuments = async (req: Request, res: Response) => {
 };
 
 /**
+ * Busca documento por ID único
+ * 
  * POST /searchByIdDocument
+ * Body: { idDocument: string }
  */
-export const searchDocument = async (req: Request, res: Response) => {
+export const searchDocument = async (
+  req: Request<{}, Document[], SearchDocumentRequest>,
+  res: Response<Document[] | { code: number; message: string }>
+) => {
   try {
     const { idDocument } = req.body;
     
     if (!idDocument) {
       return res.status(400).json({
         code: 400,
-        message: 'idDocument is required',
+        message: 'idDocument is required and must not be empty',
       });
     }
     
@@ -136,7 +170,7 @@ export const searchDocument = async (req: Request, res: Response) => {
     return res.status(200).json(result.rows);
     
   } catch (error: any) {
-    logger.error(`Error in searchDocument: ${error.message}`);
+    logger.error(`Erro em searchDocument: ${error.message}`);
     
     return res.status(500).json({
       code: 500,
@@ -147,14 +181,23 @@ export const searchDocument = async (req: Request, res: Response) => {
 
 
 /**
+ * Atualiza campos de múltiplos documentos
+ * 
  * PATCH /updateDocuments
- * Atualiza documentos (txHash, blockNumber, status)
- */
-export const updateDocuments = async (req: Request, res: Response) => {
+ * Body: { 
+ *   docsId: string[], 
+ *   updates: { txHash?, blockNumber?, status? } 
+ * }
+ * 
+ * Retorna erro se algum documento não for encontrado
+ */export const updateDocuments = async (
+  req: Request<{}, UpdateDocumentsResponse, UpdateDocumentsRequest>,
+  res: Response<UpdateDocumentsResponse | { code: number; message: string }>
+) => {
   try {
     const { docsId, updates } = req.body;
     
-    // Validações
+    // Valida docsId
     if (!docsId || !Array.isArray(docsId) || docsId.length === 0) {
       return res.status(400).json({
         code: 400,
@@ -162,6 +205,7 @@ export const updateDocuments = async (req: Request, res: Response) => {
       });
     }
     
+    // Valida updates
     if (!updates || typeof updates !== 'object' || Object.keys(updates).length === 0) {
       return res.status(400).json({
         code: 400,
@@ -169,11 +213,10 @@ export const updateDocuments = async (req: Request, res: Response) => {
       });
     }
     
-    logger.info(`Updating ${docsId.length} document(s) with fields: ${Object.keys(updates).join(', ')}`);
+    logger.info(`Atualizando ${docsId.length} documento(s) - Campos: ${Object.keys(updates).join(', ')}`);
     
-    // Atualizar cada documento
+    // Atualiza cada documento
     for (const id of docsId) {
-      // Verificar se documento existe
       const doc = await searchByDocumentId(id);
       
       if (doc.rows.length === 0) {
@@ -185,6 +228,7 @@ export const updateDocuments = async (req: Request, res: Response) => {
       
       // Atualizar
       await updateDocument(id, updates);
+      logger.info(`Documento ${id} atualizado`);
     }
     
     return res.status(200).json({
@@ -194,7 +238,6 @@ export const updateDocuments = async (req: Request, res: Response) => {
     
   } catch (error: any) {
     logger.error(`Error in updateDocuments: ${error.message}`);
-    
     return res.status(500).json({
       code: 500,
       message: error.message || 'Error updating documents',
@@ -203,7 +246,10 @@ export const updateDocuments = async (req: Request, res: Response) => {
 };
 
 /**
- * Trata documento antes de inserir (igual Fabric)
+ * Prepara documento para inserção no Cassandra
+ * 
+ * Converte campos complexos (data, idExternal, groupedBy, groupedAssets) 
+ * para JSON string conforme schema do Cassandra
  */
 const treatDocument = async (document: Document): Promise<any> => {
   return {
@@ -214,4 +260,145 @@ const treatDocument = async (document: Document): Promise<any> => {
     groupedBy: document.groupedBy ? JSON.stringify(document.groupedBy) : null,
     groupedAssets: document.groupedAssets ? JSON.stringify(document.groupedAssets) : null,
   };
+};
+
+/**
+ * Busca documentos por ID do asset
+ * 
+ * POST /searchByAssetId
+ * 
+ * Busca única com paginação:
+ * Body: { 
+ *   idAsset: string, 
+ *   pageSize?: number,    // Padrão: 100
+ *   pageState?: string    // Token para próxima página
+ * }
+ * 
+ * Busca múltipla sem paginação (máximo 50):
+ * Body: { idAssets: string[] }
+ */
+export const searchByAssetId = async (
+  req: Request<{}, SearchResponse, SearchByAssetIdRequest>,
+  res: Response<SearchResponse | { code: number; message: string }>
+) => {
+  try {
+    const { idAsset, idAssets, pageSize, pageState } = req.body;
+    
+    // Aceita busca única ou múltipla
+    const searchValue = idAssets || idAsset;
+    
+    if (!searchValue) {
+      return res.status(400).json({
+        code: 400,
+        message: 'idAsset or idAssets is required',
+      });
+    }
+    
+    // Paginação só funciona para busca única
+    const options = (pageSize || pageState) ? { pageSize, pageState } : undefined;
+    
+    const result = await searchByAssetIdDb(searchValue, options);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        code: 404,
+        message: 'No documents found',
+      });
+    }
+    
+    // Monta resposta com metadados de paginação
+    const response: any = {
+      count: result.rows.length,
+      documents: result.rows
+    };
+    
+    // Adiciona info de paginação se houver próxima página
+    if (result.pageState) {
+      response.pagination = {
+        pageState: result.pageState,
+        hasMore: true,
+        pageSize: pageSize || 100
+      };
+    }
+    
+    return res.status(200).json(response);
+    
+  } catch (error: any) {
+    logger.error(`Erro em searchByAssetId: ${error.message}`);
+    
+    return res.status(500).json({
+      code: 500,
+      message: error.message || 'Error searching documents',
+    });
+  }
+};
+
+/**
+ * Busca documentos por hash da transação blockchain
+ * 
+ * POST /searchByTxHash
+ * 
+ * Busca única com paginação:
+ * Body: { 
+ *   txHash: string, 
+ *   pageSize?: number, 
+ *   pageState?: string 
+ * }
+ * 
+ * Busca múltipla sem paginação (máximo 50):
+ * Body: { txHashes: string[] }
+ */
+export const searchByTxHash = async (
+  req: Request<{}, SearchResponse, SearchByTxHashRequest>,
+  res: Response<SearchResponse | { code: number; message: string }>
+) => {
+  try {
+    const { txHash, txHashes, pageSize, pageState } = req.body;
+    
+    // Aceita busca única ou múltipla
+    const searchValue = txHashes || txHash;
+    
+    if (!searchValue) {
+      return res.status(400).json({
+        code: 400,
+        message: 'txHash or txHashes is required',
+      });
+    }
+    
+    /// Paginação só funciona para busca única
+    const options = (pageSize || pageState) ? { pageSize, pageState } : undefined;
+    
+    const result = await searchByTxHashDb(searchValue, options);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        code: 404,
+        message: 'No documents found',
+      });
+    }
+    
+    // Monta resposta com metadados de paginação
+    const response: any = {
+      count: result.rows.length,
+      documents: result.rows
+    };
+    
+    // Adiciona info de paginação se houver próxima página
+    if (result.pageState) {
+      response.pagination = {
+        pageState: result.pageState,
+        hasMore: true,
+        pageSize: pageSize || 100
+      };
+    }
+    
+    return res.status(200).json(response);
+    
+  } catch (error: any) {
+    logger.error(`Error in searchByTxHash: ${error.message}`);
+    return res.status(500).json({
+      code: 500,
+      message: error.message || 'Error searching documents',
+    });
+  }
 };
