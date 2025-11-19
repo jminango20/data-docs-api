@@ -27,3 +27,6 @@ export const elasticHttpsMode = getEnvParam('ELASTIC_HTTPS_MODE') === 'true';
 
 // MTLS (desabilitado por padrão)
 export const mtls = getEnvParam('MTLS') === 'true';
+
+// CORS
+export const allowedOrigins = getEnvParam('ALLOWED_ORIGINS') || 'http://localhost:3000';
