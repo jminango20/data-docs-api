@@ -57,6 +57,11 @@ jobs:
           ASTRA_CLIENT_ID: "${{ secrets.ASTRA_CLIENT_ID }}"
           ASTRA_CLIENT_SECRET: "${{ secrets.ASTRA_CLIENT_SECRET }}"
           EOF
+      
+      # Criar bundle do Astra
+      - name: Create Astra bundle
+        run: |
+          echo "${{ secrets.ASTRA_BUNDLE_BASE64 }}" | base64 -d > secure-connect-db-trace-tracker.zip
 
       # Deploy no Cloud Run
       - name: Deploy to Cloud Run
