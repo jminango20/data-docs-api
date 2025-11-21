@@ -29,9 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Run linter
-        run: npm run lint
-        continue-on-error: true
+      #- name: Run linter
+      #  run: npm run lint
+      #  continue-on-error: true
 
       # Autenticar no Google Cloud
       - name: Authenticate to Google Cloud
@@ -70,7 +70,7 @@ jobs:
             --timeout 30s \
             --max-instances 10 \
             --env-vars-file .env.yaml
-            
+
       # Exibir URL do serviço
       - name: Show service URL
         run: |
