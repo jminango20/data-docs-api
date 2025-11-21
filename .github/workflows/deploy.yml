@@ -42,6 +42,22 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      # Criar arquivo de variáveis de ambiente
+      - name: Create env vars file
+        run: |
+          cat > .env.yaml << EOF
+          PORT_API: "8080"
+          APP_HOST: "0.0.0.0"
+          NODE_ENV: "production"
+          LOG_LEVEL: "info"
+          CASSANDRA_MODE: "astra"
+          ASTRA_KEYSPACE: "trace_tracker"
+          ASTRA_SECURE_BUNDLE_PATH: "./secure-connect-db-trace-tracker.zip"
+          ALLOWED_ORIGINS: "*"
+          ASTRA_CLIENT_ID: "${{ secrets.ASTRA_CLIENT_ID }}"
+          ASTRA_CLIENT_SECRET: "${{ secrets.ASTRA_CLIENT_SECRET }}"
+          EOF
+
       # Deploy no Cloud Run
       - name: Deploy to Cloud Run
         run: |
@@ -53,8 +69,8 @@ jobs:
             --memory 512Mi \
             --timeout 30s \
             --max-instances 10 \
-            --set-env-vars "PORT_API=8080,APP_HOST=0.0.0.0,NODE_ENV=production,LOG_LEVEL=info,CASSANDRA_MODE=astra,ASTRA_KEYSPACE=trace_tracker,ASTRA_SECURE_BUNDLE_PATH=./secure-connect-db-trace-tracker.zip,ALLOWED_ORIGINS=*,ASTRA_CLIENT_ID=${{ secrets.ASTRA_CLIENT_ID }},ASTRA_CLIENT_SECRET=${{ secrets.ASTRA_CLIENT_SECRET }}"
-
+            --env-vars-file .env.yaml
+            
       # Exibir URL do serviço
       - name: Show service URL
         run: |
