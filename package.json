@@ -10,7 +10,8 @@
     "dev": "nodemon --exec ts-node src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "lint": "eslint . --ext .ts"
+    "lint": "eslint . --ext .ts",
+    "db:reset": "ts-node scripts/resetDatabase.ts"
   },
   "keywords": [
     "cassandra",

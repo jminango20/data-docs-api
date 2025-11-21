@@ -28,5 +28,14 @@ export const elasticHttpsMode = getEnvParam('ELASTIC_HTTPS_MODE') === 'true';
 // MTLS (desabilitado por padrão)
 export const mtls = getEnvParam('MTLS') === 'true';
 
+// Cassandra Mode
+export const cassandraMode = getEnvParam('CASSANDRA_MODE') || 'local';
+
+// Astra Configuration
+export const astraSecureBundlePath = getEnvParam('ASTRA_SECURE_BUNDLE_PATH') || './secure-connect-db-trace-tracker.zip';
+export const astraClientId = getEnvParam('ASTRA_CLIENT_ID') || '';
+export const astraClientSecret = getEnvParam('ASTRA_CLIENT_SECRET') || '';
+export const astraKeyspace = getEnvParam('ASTRA_KEYSPACE') || 'trace_tracker';
+
 // CORS
 export const allowedOrigins = getEnvParam('ALLOWED_ORIGINS') || 'http://localhost:3000';

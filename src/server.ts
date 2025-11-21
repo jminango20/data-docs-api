@@ -42,25 +42,27 @@ const createApp = (): Application => {
   // Headers de segurança via Helmet
   app.use(securityHeaders);
 
-  // CORS - Controle de acesso entre origens
   const originsArray = allowedOrigins.split(',').map(origin => origin.trim());
-  
+
   app.use(cors({
     origin: (origin, callback) => {
-      // Permite requests sem origin (Postman, curl, server-to-server)
       if (!origin) {
         return callback(null, true);
       }
       
-      // Verifica se origin está na lista permitida
-      if (originsArray.includes(origin)) {
-        callback(null, true);
-      } else {
-        logger.warn(`CORS blocked origin: ${origin}`);
-        callback(new Error('Not allowed by CORS'));
+      if (allowedOrigins === '*') {
+        return callback(null, true);
       }
+      
+      if (originsArray.includes(origin) || originsArray.includes('*')) {
+        return callback(null, true);
+      }
+      
+      // Bloqueia
+      logger.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
   }));

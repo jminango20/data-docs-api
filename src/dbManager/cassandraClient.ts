@@ -1,20 +1,67 @@
 import * as cassandra from 'cassandra-driver';
-import { datacenter, ipsCluster } from '../config';
+import { 
+  datacenter, 
+  ipsCluster,
+  cassandraMode,
+  astraSecureBundlePath,
+  astraClientId,
+  astraClientSecret,
+  astraKeyspace
+} from '../config';
 import logger from '../utils/logger';
+import * as path from 'path';
 
 /**
- * Cliente Cassandra configurado sem autenticação (ambiente de desenvolvimento)
+ * CLIENTE CASSANDRA
  * 
- * Para produção, adicionar authProvider com username/password
+ * Suporta 2 modos:
+ * - local: Cassandra local (docker) SEM autenticação
+ * - astra: DataStax Astra (cloud) COM autenticação segura
  */
-export const client = new cassandra.Client({
-  contactPoints: ipsCluster.split(',').map(ip => ip.trim()),
-  localDataCenter: datacenter,
-  encoding: {
-    map: Map,
-    set: Set,
-  },
-});
+let client: cassandra.Client;
+
+if (cassandraMode === 'astra') {
+  // ========== MODO ASTRA (CLOUD - PRODUÇÃO) ==========
+  logger.info('Configuração Cassandra client para Astra (cloud)');
+  
+  const bundlePath = path.resolve(astraSecureBundlePath);
+  
+  client = new cassandra.Client({
+    cloud: {
+      secureConnectBundle: bundlePath
+    },
+    credentials: {
+      username: astraClientId,
+      password: astraClientSecret
+    },
+    keyspace: astraKeyspace,
+    encoding: {
+      map: Map,
+      set: Set,
+    },
+  });
+  
+  logger.info(`Astra mode enabled`);
+  logger.info(`Bundle: ${bundlePath}`);
+  logger.info(`Keyspace: ${astraKeyspace}`);
+  
+} else {
+  // ========== MODO LOCAL (DEV) ==========
+  logger.info('Configuração Cassandra client para LOCAL (dev)');
+  
+  client = new cassandra.Client({
+    contactPoints: ipsCluster.split(',').map(ip => ip.trim()),
+    localDataCenter: datacenter,
+    encoding: {
+      map: Map,
+      set: Set,
+    },
+  });
+  
+  logger.warn('Rodando Cassandra local (dev) sem autenticação Docker/Compose');
+}
+
+export { client };
 
 // Alias para compatibilidade
 export const clientFirstAccess = client;
@@ -47,12 +94,18 @@ export const connectCassandra = async (): Promise<void> => {
 };
 
 /**
- * Cria keyspace trace_tracker se não existir
+ * KEYSPACE: trace_tracker
  * 
- * Configuração: SimpleStrategy com replication_factor = 1 (apenas para dev/teste)
- * Para produção, usar NetworkTopologyStrategy com múltiplas réplicas
+ * No Astra: keyspace já existe (criado no setup)
+ * No Local: cria se não existir
  */
 export const createKeyspace = async (): Promise<void> => {
+  if (cassandraMode === 'astra') {
+    logger.info(`Using existing Astra keyspace: ${astraKeyspace}`);
+    return;
+  }
+
+  // Modo local: criar keyspace
   const query = `
     CREATE KEYSPACE IF NOT EXISTS trace_tracker
     WITH replication = {
@@ -61,16 +114,17 @@ export const createKeyspace = async (): Promise<void> => {
     }
   `;
   await client.execute(query);
-  logger.info('Keyspace trace_tracker criado/verificado');
+  logger.info('Keyspace trace_tracker created/verified (local)');
 };
 
 /**
- * Cria usuário blockchain no Cassandra
+ * Criar usuário blockchain
  * 
- * SKIP em ambiente de desenvolvimento (sem autenticação ativa)
+ * No Astra: não aplicável (usa tokens)
+ * No Local: skip (sem auth em dev)
  */
 export const addUserBlockchain = async (): Promise<void> => {
-  logger.info('Criação de usuário ignorada (modo dev sem autenticação)');
+  logger.info('Skipping user creation (not needed in current mode)');
   return Promise.resolve();
 };
 
